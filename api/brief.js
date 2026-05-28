@@ -19,8 +19,24 @@ function extractTextFromResponse(data) {
     .trim();
 }
 
+function parseCompanyFromResponse(text) {
+  const lines = text.split('\n');
+  const match = lines[0]?.match(/^COMPANY:\s*(.+)$/);
+  if (!match) {
+    return { brief: text, company_name: null };
+  }
+
+  const company_name = match[1].trim();
+  let startIndex = 1;
+  if (lines[startIndex] === '') {
+    startIndex += 1;
+  }
+  const brief = lines.slice(startIndex).join('\n').trim();
+  return { brief, company_name };
+}
+
 function buildUserMessage(url, title, links, bodyText) {
-  return `You are a research analyst preparing a company brief for someone investigating this company — likely a candidate considering applying for a role there, or an operator evaluating it as a partner/competitor. Use the page content provided, fetch any relevant internal pages whose links are included (e.g. /about, /product, /careers), and use web search ONLY when essential information is missing from the page itself (e.g. recent funding, leadership news). Be efficient — don't over-search.
+  return `You are a research analyst preparing a company brief for someone investigating this company — likely a candidate considering applying for a role there, or an operator evaluating it as a partner/competitor. Begin your response with a single line in the format 'COMPANY: <name>' on its own line, where <name> is the clean company name (e.g. 'Anthropic', not 'Home | Anthropic' or any nav-style title). Then leave a blank line, then begin the brief with '## What they do'. Use the page content provided, fetch any relevant internal pages whose links are included (e.g. /about, /product, /careers), and use web search ONLY when essential information is missing from the page itself (e.g. recent funding, leadership news). Be efficient — don't over-search.
 
 PAGE URL: ${url}
 PAGE TITLE: ${title}
@@ -145,14 +161,15 @@ module.exports = async (req, res) => {
       return res.status(502).json({ error: message });
     }
 
-    const brief = extractTextFromResponse(data);
-    if (!brief) {
+    const rawText = extractTextFromResponse(data);
+    if (!rawText) {
       return res.status(502).json({
         error: 'No text content returned from Claude.',
       });
     }
 
-    return res.status(200).json({ brief });
+    const { brief, company_name } = parseCompanyFromResponse(rawText);
+    return res.status(200).json({ brief, company_name });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     return res.status(500).json({ error: message });
