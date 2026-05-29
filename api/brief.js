@@ -169,6 +169,10 @@ module.exports = async (req, res) => {
     }
 
     const { brief, company_name } = parseCompanyFromResponse(rawText);
+    console.log('Returning to client:', JSON.stringify({
+      company_name_extracted: company_name,
+      brief_starts_with: (brief || '').slice(0, 80),
+    }));
     return res.status(200).json({ brief, company_name });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
