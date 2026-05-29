@@ -19,24 +19,74 @@ function extractTextFromResponse(data) {
     .trim();
 }
 
-function parseCompanyFromResponse(text) {
-  const lines = text.split('\n');
-  const match = lines[0]?.match(/^COMPANY:\s*(.+)$/);
+function stripNarrationBeforeBrief(text) {
+  const idx = text.indexOf('## ');
+  if (idx === -1) return text;
+  return text.slice(idx).trim();
+}
+
+function extractCompanyLine(text) {
+  const match = text.match(/^COMPANY:\s*(.+)$/m);
   if (!match) {
-    return { brief: text, company_name: null };
+    return { briefText: text, company_name: null, found: false };
   }
 
   const company_name = match[1].trim();
-  let startIndex = 1;
-  if (lines[startIndex] === '') {
-    startIndex += 1;
+  const briefText = text.replace(/^COMPANY:\s*.+\r?\n?/m, '').trim();
+  return { briefText, company_name, found: true };
+}
+
+async function fallbackCompanyName(apiKey, title, bodyText) {
+  const contentSnippet =
+    typeof bodyText === 'string'
+      ? bodyText.slice(0, 2000)
+      : String(bodyText).slice(0, 2000);
+
+  const response = await fetch(ANTHROPIC_MESSAGES_URL, {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      max_tokens: 30,
+      messages: [
+        {
+          role: 'user',
+          content: `Based on this content, what is the clean company name? Respond with only the name, nothing else. If unclear, respond with 'Unknown'.
+
+PAGE TITLE: ${title}
+PAGE CONTENT (first 2000 chars): ${contentSnippet}`,
+        },
+      ],
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    return null;
   }
-  const brief = lines.slice(startIndex).join('\n').trim();
-  return { brief, company_name };
+
+  const name = extractTextFromResponse(data).trim();
+  if (!name || name.toLowerCase() === 'unknown') {
+    return null;
+  }
+  return name;
 }
 
 function buildUserMessage(url, title, links, bodyText) {
-  return `You are a research analyst preparing a company brief for someone investigating this company — likely a candidate considering applying for a role there, or an operator evaluating it as a partner/competitor. Begin your response with a single line in the format 'COMPANY: <name>' on its own line, where <name> is the clean company name (e.g. 'Anthropic', not 'Home | Anthropic' or any nav-style title). Then leave a blank line, then begin the brief with '## What they do'. Use the page content provided, fetch any relevant internal pages whose links are included (e.g. /about, /product, /careers), and use web search ONLY when essential information is missing from the page itself (e.g. recent funding, leadership news). Be efficient — don't over-search.
+  return `You are a research analyst preparing a company brief for someone investigating this company — likely a candidate considering applying for a role there, or an operator evaluating it as a partner/competitor. Use the page content provided, fetch any relevant internal pages whose links are included (e.g. /about, /product, /careers), and use web search ONLY when essential information is missing from the page itself (e.g. recent funding, leadership news). Be efficient — don't over-search.
+
+FORMAT REQUIREMENT (mandatory, do not skip): The very first line of your response must be exactly:
+
+COMPANY: <clean company name>
+
+Where <clean company name> is the company name only (e.g. 'Databricks', not 'Databricks IQ: AI-Driven Analytics...' or 'Home | Databricks'). 
+Then a blank line, then begin the brief with '## What they do'. 
+If you have any planning thoughts to share, do so AFTER the brief, not before. 
+The COMPANY line is the very first thing in your response.
 
 PAGE URL: ${url}
 PAGE TITLE: ${title}
@@ -168,9 +218,21 @@ module.exports = async (req, res) => {
       });
     }
 
-    const { brief, company_name } = parseCompanyFromResponse(rawText);
+    const { briefText, company_name: primaryCompanyName, found } =
+      extractCompanyLine(rawText);
+
+    let company_name = primaryCompanyName;
+    let company_name_source = found ? 'primary' : 'none';
+
+    if (!found) {
+      company_name = await fallbackCompanyName(apiKey, title, trimmedBodyText);
+      company_name_source = company_name ? 'fallback' : 'none';
+    }
+
+    const brief = stripNarrationBeforeBrief(briefText);
     console.log('Returning to client:', JSON.stringify({
       company_name_extracted: company_name,
+      company_name_source,
       brief_starts_with: (brief || '').slice(0, 80),
     }));
     return res.status(200).json({ brief, company_name });
